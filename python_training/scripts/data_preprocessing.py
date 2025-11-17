@@ -19,6 +19,7 @@ def reformat_wav(data_raw):
         ____ containing .wav file name and data in a convenient format.
     """
     data_processed = data_raw
+    
     return data_processed
 ## function to perform any data augmentation. ideally we can do this through some .yaml config file
 def data_augmentation(data,config):
