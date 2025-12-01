@@ -19,7 +19,7 @@
 
 #define ALARM_NUM 0
 #define ALARM_IRQ TIMER_IRQ_0
-#define DELAY 125 // 1/Fs (in microseconds)
+#define DELAY 125 // 1/Fs (in microeconds)
 
 #define LED      25
 
