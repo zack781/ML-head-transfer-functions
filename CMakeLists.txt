@@ -33,13 +33,29 @@ project(ML-head-transfer-functions C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
-# Add executable. Default name is the project name, version 0.1
+add_subdirectory(FatFs_SPI build)
 
-add_executable(ML-head-transfer-functions)
+# Add executable. Default name is the project name, version 0.1
+add_executable(ML-head-transfer-functions
+    hw_config.c
+)
+
 target_sources(ML-head-transfer-functions PRIVATE ML-head-transfer-functions.c)
 
 # Add the standard library to the build
-target_link_libraries(ML-head-transfer-functions pico_stdlib pico_bootsel_via_double_reset hardware_spi hardware_sync hardware_adc hardware_timer)
+target_link_libraries(ML-head-transfer-functions
+    pico_stdlib
+    pico_bootsel_via_double_reset
+    pico_stdio 
+    pico_stdio_uart
+    pico_multicore
+    hardware_spi
+    hardware_sync
+    hardware_adc
+    hardware_timer
+    hardware_pio
+    no-OS-FatFS-SD-SDIO-SPI-RPi-Pico 
+)
 
 # # Add the standard include files to the build
 # target_include_directories(ML-head-transfer-functions PRIVATE
