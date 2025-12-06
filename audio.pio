@@ -1,0 +1,24 @@
+.audio-driver
+wrap_target
+    nop
+wrap
+
+% c-sdk {
+void audio_program_init(PIO pio, uint sm, uint offset, uint pin) {
+    pio_sm_config c = audio_program_get_default_config(offset);
+
+    pio_gpio_init(pio, pio);
+
+    sm_config_set_set_pins(&c, pin, 1);
+
+    // Set the pin direction to output (in PIO)
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+
+    // Set clock division (div by 5 for 25 MHz state machine)
+    // The state machine should be set to the audio sample rate (ex. 44.1 kHz)
+    sm_config_set_clkdiv(&c, 6);
+
+    // Load configuration and jump to start of the program
+    pio_sm_init(pio, sm, offset, &c);
+}
+%}
