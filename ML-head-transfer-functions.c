@@ -56,6 +56,8 @@ volatile int pb_write = 0;
 #define NUM_BUFFERS 2
 #define BUFFER_SIZE_SAMPLES 2048
 
+#define BYTES_TO_READ 100000
+
 // volatile int16_t audio_buffers[NUM_BUFFERS][BUFFER_SIZE_SAMPLES];
 // volatile uint8_t current_play_buffer = 0;
 // volatile bool buffer_ready[NUM_BUFFERS] = { false, false };
@@ -74,7 +76,7 @@ volatile int pb_write = 0;
 int16_t audio_samples[AUDIO_SAMPLE_COUNT] ;
 
 
-#define DAC_config_chan_A 0b0001000000000000 // DAC channel A, unbuffered, gain = 1x, active
+#define DAC_config_chan_A 0b0001000000000000// DAC channel A, unbuffered, gain = 1x, active
 
 
 // max number of samples per DMA transfer??
@@ -87,25 +89,35 @@ int ctrl_chan;;
 
 static int timestamp;
 
-#define RING_SIZE 4096
+#define RING_SIZE 9000
 volatile uint16_t ring[RING_SIZE];
+volatile uint16_t ring1[RING_SIZE];
 volatile uint32_t w_idx = 0;
 volatile uint32_t r_idx = 0;
+volatile uint32_t w_idx1 = 0;
+volatile uint32_t r_idx1 = 0;
 
-volatile uint16_t ring_playback[RING_SIZE];
 
-static inline bool ring_push(uint16_t s) {
-    uint32_t next = (w_idx + 1) & (RING_SIZE - 1);
-    if (next == r_idx) return false;
-    ring[w_idx] = s;
-    w_idx = next;
+// volatile uint16_t ring_playback[RING_SIZE];
+
+static inline bool ring_push(uint16_t s, volatile uint16_t* ring_, volatile uint32_t* w_idx_, volatile uint32_t* r_idx_) {
+    uint32_t next = (*w_idx_ + 1) & (RING_SIZE - 1);
+    if (next == *r_idx_) {
+        gpio_put(LED, 1);
+        return false;
+    }
+    ring_[*w_idx_] = s;
+    *w_idx_ = next;
     return true;
 }
 
-static inline bool ring_pop(uint16_t *out) {
-    if (r_idx == w_idx) return false;
-    *out = ring[r_idx];
-    r_idx = (r_idx + 1) & (RING_SIZE - 1);
+static inline bool ring_pop(uint16_t *out, volatile uint16_t* ring_, volatile uint32_t* w_idx_, volatile uint32_t* r_idx_) {
+    if (*r_idx_ == *w_idx_) {
+        gpio_put(LED, 1);
+        return false;
+    }
+    *out = ring_[*r_idx_];
+    *r_idx_ = (*r_idx_ + 1) & (RING_SIZE - 1);
     return true;
 }
 
@@ -119,7 +131,7 @@ FRESULT fr;
 FATFS fs;
 FIL fil;
 bool file_open = false;
-char filename[] = "test.wav";
+char filename[1000];
 UINT bw;
 uint32_t data_bytes = 0;
 
@@ -127,6 +139,7 @@ FRESULT pb_fr;
 FIL fil_pb;
 UINT pb_bw;
 bool file_read = false;
+char pb_filename[1000];
 
 FRESULT test_fr;
 FIL fil_test;
@@ -151,8 +164,8 @@ void write_wav_header(FIL *fil, uint32_t data_size, wav_format_t fmt) { // wave 
         fmt.sample_rate & 0xFF, (fmt.sample_rate>>8)&0xFF,
         (fmt.sample_rate>>16)&0xFF, (fmt.sample_rate>>24)&0xFF,
         byte_rate & 0xFF, (byte_rate>>8)&0xFF, (byte_rate>>16)&0xFF, (byte_rate>>24)&0xFF,
-        block_align, 0,
-        fmt.bits_per_sample, 0,
+        block_align & 0xFF, (block_align >> 8) & 0xFF,
+        fmt.bits_per_sample & 0xFF, (fmt.bits_per_sample >> 8) & 0xFF,
         'd','a','t','a',
         data_size & 0xFF, (data_size>>8)&0xFF,
         (data_size>>16)&0xFF, (data_size>>24)&0xFF
@@ -167,13 +180,21 @@ void write_wav_header(FIL *fil, uint32_t data_size, wav_format_t fmt) { // wave 
 
     UINT bw;
     f_lseek(fil, 0);
-    f_write(fil, header, 44, &bw);
+    fr = f_write(fil, header, 44, &bw);
+
+    if (fr != FR_OK || bw != 44) {
+        printf("WAV header write failed: %d, bw=%u\n", fr, bw);
+    }
+
+    printf("WAV: %lu Hz, %u ch, %u bits, data = %lu bytes\n",
+       fmt.sample_rate, fmt.num_channels,
+       fmt.bits_per_sample, data_size);
 }
 
 wav_format_t fmt = {
     .sample_rate = 44100,
     .bits_per_sample = 16,
-    .num_channels = 1
+    .num_channels = 2
 };
 
 static void alarm_irq(void)
@@ -190,7 +211,10 @@ static void alarm_irq(void)
     // sample = adc_read();
     // sample_buffer[buffer_index] = sample;
     if (file_open) {
-        ring_push(adc_read());
+        adc_select_input(0);
+        ring_push(adc_read(), ring, &w_idx, &r_idx);
+        adc_select_input(1);
+        ring_push(adc_read(), ring1, &w_idx1, &r_idx1);
     }
     // buffer_index++;
     // printf("ADC Sample: %f\n", (float)sample);
@@ -247,7 +271,12 @@ static PT_THREAD (protothread_core_1(struct pt *pt))
         // Samples processing goes here!
         while (file_open) {
             uint16_t raw;
-            if (ring_pop(&raw)) {
+            if (ring_pop(&raw, ring, &w_idx, &r_idx)) {
+                int16_t pcm = adc_to_pcm16(raw);
+                f_write(&fil, &pcm, 2, &bw);
+                data_bytes += 2;
+            }
+            if (ring_pop(&raw, ring1, &w_idx1, &r_idx1)) {
                 int16_t pcm = adc_to_pcm16(raw);
                 f_write(&fil, &pcm, 2, &bw);
                 data_bytes += 2;
@@ -277,12 +306,12 @@ static PT_THREAD (protothread_core_1(struct pt *pt))
             // }
         }
 
-        spare_time = DELAY - (time_us_32() - begin_time);
-        if (spare_time <= 0) {
-            gpio_put(LED, 1);
-        } else {
-            gpio_put(LED, 0);
-        }
+        // spare_time = DELAY - (time_us_32() - begin_time);
+        // if (spare_time <= 0) {
+        //     gpio_put(LED, 1);
+        // } else {
+        //     gpio_put(LED, 0);
+        // }
         PT_YIELD_usec(spare_time);
     }
 
@@ -297,6 +326,10 @@ static PT_THREAD (protothread_serial(struct pt *pt))
     static char classifier;
     static int test_in;
     static float float_in;
+
+    static int file_index = 0;
+    static int angle1;
+    static int angle2;
     while(1) {
         sprintf(pt_serial_out_buffer, "input a command: ");
         serial_write;
@@ -313,15 +346,15 @@ static PT_THREAD (protothread_serial(struct pt *pt))
             }
 
             // 2. Open file for reading
-            test_fr = f_open(&fil_test, "helloworld.txt", FA_READ);
-            if (test_fr != FR_OK) {
-                printf("Open failed: %d\n", test_fr);
-            } else {
-                printf("Txt file opened\n");
-            }
+            // test_fr = f_open(&fil_test, "helloworld.txt", FA_READ);
+            // if (test_fr != FR_OK) {
+            //     printf("Open failed: %d\n", test_fr);
+            // } else {
+            //     printf("Txt file opened\n");
+            // }
 
             // sample_buffer[buffer_index] = sample;
-            pb_fr = f_open(&fil_pb, "music.txt", FA_READ);
+            pb_fr = f_open(&fil_pb, ".txt", FA_READ);
             if (pb_fr != FR_OK) {
                 printf("ERROR: Could not open file\n");
                 while (true);
@@ -352,6 +385,23 @@ static PT_THREAD (protothread_serial(struct pt *pt))
             } else {
                 printf("File closed: %s\r\n", filename);
             }
+            pb_fr = f_close(&fil_pb);
+            if (pb_fr != FR_OK) {
+                printf("ERROR: Could not close file (%d)\r\n", pb_fr);
+                while (true);
+            } else {
+                printf("File closed: %s\r\n", pb_filename);
+            }
+            memset(filename, '\0', 1000);
+            memset(pb_filename, '\0', 1000);
+
+            w_idx = 0;
+            r_idx = 0;
+            w_idx1 = 0;
+            r_idx1 = 0;
+
+            pb_read = 0;
+            pb_write = 0;
         }
         if (classifier == 'u') {
             f_unmount("0:");
@@ -366,37 +416,87 @@ static PT_THREAD (protothread_serial(struct pt *pt))
             // decode the audio data
             // send to DAC via SPI
 
-            printf("Playing back audio...\r\n");
-            // for testing, just read the file and output to DAC
-            FIL fil_pb;
-            char audio_file[] = "sine.wav";
+            sprintf(pt_serial_out_buffer, "choose audio file to play [1 to 6]: \r\n");
+            serial_write ;
+            serial_read ;
+            sscanf(pt_serial_in_buffer,"%d", &file_index) ;
 
+            switch(file_index) {
+                case 1:
+                    strcpy(pb_filename, "sine_16.txt");
+                    break;
+                case 2:
+                    strcpy(pb_filename, "pluck.txt");
+                    break;
+                case 3:
+                    strcpy(pb_filename, "linear_p5_200_p1_1400_sine_chirp.txt");
+                    break;
+                case 4:
+                    strcpy(pb_filename, "dtmf.txt");
+                    break;
+                case 5:
+                    strcpy(pb_filename, "snap.txt");
+                    break;
+                case 6:
+                    strcpy(pb_filename, "207bpm_8bpb_ping_short.txt");
+                    break;
+                default:
+                    strcpy(pb_filename, "sine_16.txt");
+                    break;
+            }
 
-            fr = f_open(&fil_pb, audio_file, FA_READ);
+            sprintf(pt_serial_out_buffer, "angle 1: \r\n");
+            serial_write ;
+            serial_read ;
+            sscanf(pt_serial_in_buffer,"%d", &angle1) ;
+
+            sprintf(pt_serial_out_buffer, "angle 2: \r\n");
+            serial_write ;
+            serial_read ;
+            sscanf(pt_serial_in_buffer,"%d", &angle2) ;
+
+            printf("pb_filename: %s\n", pb_filename);
+            strcpy(filename, pb_filename);
+
+            printf("filename: %s\n", filename);
+
+            char *ext = strrchr(filename, '.');  // find ".txt"
+            printf("Filename generation...\r\n");
+
+            if (ext != NULL) {
+                char temp[128];
+
+                // Copy base name without extension
+                size_t base_len = ext - filename;
+                memcpy(temp, filename, base_len);
+                temp[base_len] = '\0';
+
+                // Build new filename
+                snprintf(filename, sizeof(filename),
+                        "%s_%d_%d.wav",
+                        temp, angle1, angle2);
+            }
+            printf("Output filename: %s\r\n", filename);
+
+            fr = f_open(&fil, filename, FA_WRITE | FA_CREATE_ALWAYS);
             if (fr != FR_OK) {
                 printf("ERROR: Could not open file (%d)\r\n", fr);
                 while (true);
             } else {
-                printf("File opened: %s\r\n", audio_file);
+                printf("File opened: %s\r\n", filename);
             }
 
-            // skip the header
-            f_lseek(&fil_pb, 44);
-            uint16_t sample_pb;
-            UINT br;
-            FRESULT fr_pb;
-            while (1) {
-                fr_pb = f_read(&fil_pb, &sample_pb, 2, &br);
-                if (fr_pb != FR_OK || br == 0) {
-                    break;
-                }
-                // send to DAC via SPI
-                uint16_t dac_data = sample_pb + 0x8000; // assuming DAC expects unsigned data
-                spi_write16_blocking(SPI_PORT, &dac_data, 1);
-                // toggle LDAC to update output
-                gpio_put(LDAC, 1);
-                gpio_put(LDAC, 0);
-            }   
+            pb_fr = f_open(&fil_pb, pb_filename, FA_READ);
+            if (pb_fr != FR_OK) {
+                printf("ERROR: Could not open file\n");
+                while (true);
+            } else {
+                f_read(&fil_pb, &sample_buffer[pb_write], BYTES_TO_READ, &pb_bw);
+                pb_write = (pb_write + pb_bw/2) % BUFFER_SIZE;
+                printf("File opened\n");
+            }
+
+            file_open = true;
         }
     }
     PT_END(pt);
@@ -433,13 +533,39 @@ void playback_callback() {
         // printf("%d\n", sample_pb);
         uint16_t DAC_data; 
         uint16_t sample_pb = sample_buffer[pb_read];
+        // int32_t sample_pb = (int32_t)sample_buffer[pb_read] + 32768;
         int original_sample =  sample_buffer[pb_read];
         // printf("%d\n", original_sample);
-        DAC_data = (DAC_config_chan_A | (((sample_pb >> 4)) & 0xfff));
+        DAC_data = (uint16_t)(DAC_config_chan_A | (((sample_pb >> 4)) & 0xfff));
         
         // DAC_data = (DAC_config_chan_A | (sample_pb & 0xffff))  ;
         spi_write16_blocking(SPI_PORT, &DAC_data, 1);
         pb_read = (pb_read + 1) % BUFFER_SIZE;
+        // buffer_index = buffer_index + 2;
+        // if (buffer_index >= BYTES_TO_READ) {
+        //     file_read = true;
+        //     file_open = false;
+            
+        //     printf("Closing file...\r\n");
+        //     write_wav_header(&fil, data_bytes, fmt);
+        //     fr = f_close(&fil);
+        //     if (fr != FR_OK) {
+        //         printf("ERROR: Could not close file (%d)\r\n", fr);
+        //         while (true);
+        //     } else {
+        //         printf("File closed: %s\r\n", filename);
+        //     }
+
+        //     pb_fr = f_close(&fil_pb);
+        //     if (pb_fr != FR_OK) {
+        //         printf("ERROR: Could not close file (%d)\r\n", pb_fr);
+        //         while (true);
+        //     } else {
+        //         printf("File closed: %s\r\n", pb_filename);
+        //     }
+
+        //     printf("playback ended\n");
+        // }
         // f_read(&fil_test, &txt_res, 1, &pb_bw);
        
         // printf("char = %c \n", txt_res);
@@ -448,12 +574,12 @@ void playback_callback() {
         //     f_lseek(&fil_pb, 44); 
         // }
     }
-    spare_time = PB_DELAY - (time_us_32() - begin_time);
-    if (spare_time <= 0) {
-        gpio_put(LED, 1);
-    } else {
-        gpio_put(LED, 0);
-    }
+    // spare_time = PB_DELAY - (time_us_32() - begin_time);
+    // if (spare_time <= 0) {
+    //     gpio_put(LED, 1);
+    // } else {
+    //     gpio_put(LED, 0);
+    // }
 }
 
 int main()
@@ -463,6 +589,7 @@ int main()
     printf("Starting ADC with Timer IRQ example\n");
     adc_init();
     adc_gpio_init(26);
+    adc_gpio_init(27);
     adc_select_input(0);
 
     gpio_init(ISR_GPIO) ;
