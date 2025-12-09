@@ -96,9 +96,14 @@ volatile uint32_t w_idx = 0;
 volatile uint32_t r_idx = 0;
 volatile uint32_t w_idx1 = 0;
 volatile uint32_t r_idx1 = 0;
+// -----------------------------Things alex added 12/9--------------------------------------
+#define WRITE_BLOCK_SIZE_BYTES 4096
+#define WRITE_BLOCK_SIZE_SAMPLES (WRITE_BLOCK_SIZE_BYTES / 4)// 4 bytes per stereo sample samples (2x int16_t)
+// flag used by serial thread to signal to core 1 to flush leftover data on file close
+volatile bool flush_on_close = false;
+// -----------------------------Things alex added 12/9--------------------------------------
 
 
-// volatile uint16_t ring_playback[RING_SIZE];
 
 static inline bool ring_push(uint16_t s, volatile uint16_t* ring_, volatile uint32_t* w_idx_, volatile uint32_t* r_idx_) {
     uint32_t next = (*w_idx_ + 1) & (RING_SIZE - 1);
@@ -238,13 +243,13 @@ static PT_THREAD (protothread_core_1(struct pt *pt))
     // Indicate thread beginning
     PT_BEGIN(pt) ;
     printf ("Core 0 thread running...\n");
-
+    // static buffer and idex for core 1 bulk write to SD card 
+    static int16_t  write_buffer[WRITE_BLOCK_SIZE_SAMPLES*2];
+    static uint16_t buffer_pcm_idx = 0; //current index: units of samples 
+    static UINT bw_local;
     static int begin_time ;
     static int spare_time ;
-
     int ret;
-    // char buf[100];
-
     // Initialize SD card
     if (!sd_init_driver()) {
         printf("ERROR: Could not initialize SD card\r\n");
@@ -262,61 +267,73 @@ static PT_THREAD (protothread_core_1(struct pt *pt))
         printf("Filesystem mounted.\r\n");
     }
     // printf("Core 0 thread still running...\n");
-
-    while(1) {
+    while(1){
+        //wait for semaphore signal from timer irq
         PT_SEM_WAIT(pt, &file_sem);
-        // printf("Core 0 thread running...\n");
-        begin_time = time_us_32();
-
-        // Samples processing goes here!
-        while (file_open) {
-            uint16_t raw;
-            if (ring_pop(&raw, ring, &w_idx, &r_idx)) {
-                int16_t pcm = adc_to_pcm16(raw);
-                f_write(&fil, &pcm, 2, &bw);
-                data_bytes += 2;
-            }
-            if (ring_pop(&raw, ring1, &w_idx1, &r_idx1)) {
-                int16_t pcm = adc_to_pcm16(raw);
-                f_write(&fil, &pcm, 2, &bw);
-                data_bytes += 2;
-            }
-
-            // static int16_t sample_pb;
-            // f_read(&fil_pb, &sample_pb, 2, &pb_bw);
-            // f_read(&fil_pb, &sample_buffer[pb_write], 100, &pb_bw);
-
-            // if (pb_bw < 2) {
-            //     printf("file ended %d \n", buffer_index);
-            //     // buffer_index = 0;
-            //     // sample_buffer[pb_write] = 0;
-            //     // pb_write = (pb_write + 1) % BUFFER_SIZE;
-            //     // file_read = true;
-            //     // f_lseek(&fil_pb, 44);
-                
-            // } else {
-            //     // sample_buffer[pb_write] = sample_pb;
-            //     // printf("buffer_index = %d", buffer_index);
-            //     // if (buffer_index + 1 >= 661522) { // total samples in sine.wav
-            //     //     file_read = true;
-            //     // }
-            //     pb_write = (pb_write + pb_bw/2) % BUFFER_SIZE;
-            //     buffer_index = (buffer_index + pb_bw/2);
-            //     // f_lseek(&fil_pb, buffer_index * 2); 
-            // }
+        // data accumulation and bulk write loop
+        if (file_open){
+            uint16_t raw_l, raw_r;
+            int16_t pcm_l, pcm_r;
+            // check if a stereo sample pair is ready
+            while ((ring_pop(&raw_l,ring,&w_idx,&r_idx) && 
+            ring_pop(&raw_r,ring1,&w_idx1,&r_idx1)))
+            {
+                // convert ADC raw to 16-bit PCM 
+                pcm_l = adc_to_pcm16(raw_l);
+                pcm_r = adc_to_pcm16(raw_r);
+                // store interleaved samples in write buffer
+                write_buffer[buffer_pcm_idx++] = pcm_l;
+                write_buffer[buffer_pcm_idx++] = pcm_r; 
+                // check if RAM buffer is full and needs a bulk write to SD 
+                if (buffer_pcm_idx >= WRITE_BLOCK_SIZE_SAMPLES*2){
+                    fr = f_write(&fil, write_buffer, WRITE_BLOCK_SIZE_BYTES, &bw_local);
+                    if (fr != FR_OK ){
+                        printf("ERROR: Write failed (%d)\r\n", fr);
+                    }
+                    data_bytes += WRITE_BLOCK_SIZE_BYTES;
+                    buffer_pcm_idx = 0; // reset buffer index
+                }
+            } 
         }
-
-        // spare_time = DELAY - (time_us_32() - begin_time);
-        // if (spare_time <= 0) {
-        //     gpio_put(LED, 1);
-        // } else {
-        //     gpio_put(LED, 0);
-        // }
-        PT_YIELD_usec(spare_time);
+        // flush logic check on close signal 
+        if (flush_on_close && !file_open){
+            UINT bytes_to_flush = buffer_pcm_idx * 2; // bytes to flush
+            
+            if (bytes_to_flush>0){
+                fr = f_write(&fil, write_buffer, bytes_to_flush, &bw_local);
+                if (fr != FR_OK ){
+                    printf("ERROR: Write failed (%d)\r\n", fr);
+                }
+                data_bytes += bytes_to_flush;
+            }
+            buffer_pcm_idx = 0; // reset buffer index
+            flush_on_close = false; // reset flush flag
+        }
     }
-
-    // Indicate thread end
     PT_END(pt) ;
+    // while(1) {
+    //     PT_SEM_WAIT(pt, &file_sem);
+    //     // printf("Core 0 thread running...\n");
+    //     begin_time = time_us_32();
+
+    //     // Samples processing goes here!
+    //     while (file_open) {
+    //         uint16_t raw;
+    //         if (ring_pop(&raw, ring, &w_idx, &r_idx)) {
+    //             int16_t pcm = adc_to_pcm16(raw);
+    //             f_write(&fil, &pcm, 2, &bw);
+    //             data_bytes += 2;
+    //         }
+    //         if (ring_pop(&raw, ring1, &w_idx1, &r_idx1)) {
+    //             int16_t pcm = adc_to_pcm16(raw);
+    //             f_write(&fil, &pcm, 2, &bw);
+    //             data_bytes += 2;
+    //         }
+    //     }
+    //     PT_YIELD_usec(spare_time);
+    // }
+    // Indicate thread end
+
 }
 
 static PT_THREAD (protothread_serial(struct pt *pt))
@@ -377,6 +394,10 @@ static PT_THREAD (protothread_serial(struct pt *pt))
         if (classifier == 'd') {
             printf("Closing file...\r\n");
             file_open = false;
+            //--signal core 1 to flush any leftover data
+            flush_on_close = true;
+            PT_YIELD(pt);
+            //---------signal core 1 to flush any leftover data---------
             write_wav_header(&fil, data_bytes, fmt);
             fr = f_close(&fil);
             if (fr != FR_OK) {
@@ -412,7 +433,7 @@ static PT_THREAD (protothread_serial(struct pt *pt))
             // -> sound primitive chosen (1-10)
             // -> orientation (degrees) 
         
-            // open the chosen file
+            // open the choen file
             // decode the audio data
             // send to DAC via SPI
 
@@ -431,11 +452,11 @@ static PT_THREAD (protothread_serial(struct pt *pt))
                 case 3:
                     strcpy(pb_filename, "linear_p5_200_p1_1400_sine_chirp.txt");
                     break;
-                case 4:
-                    strcpy(pb_filename, "dtmf.txt");
+                case 4: 
+                    strcpy(pb_filename, "sweep.txt");
                     break;
                 case 5:
-                    strcpy(pb_filename, "snap.txt");
+                    strcpy(pb_filename, "sharp-sweep.txt");
                     break;
                 case 6:
                     strcpy(pb_filename, "207bpm_8bpb_ping_short.txt");
@@ -467,6 +488,7 @@ static PT_THREAD (protothread_serial(struct pt *pt))
                 char temp[128];
 
                 // Copy base name without extension
+
                 size_t base_len = ext - filename;
                 memcpy(temp, filename, base_len);
                 temp[base_len] = '\0';

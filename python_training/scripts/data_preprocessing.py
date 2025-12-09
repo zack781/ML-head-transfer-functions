@@ -127,8 +127,8 @@ def fix_stereo_wav(path_in: str, path_out: str, fs: int = 44100) -> None:
 
     wavfile.write(path_out, fs, stereo)
 
-fix_stereo_wav(
-    "/Users/alexdhawan/Desktop/ECE5730/ML-head-transfer-functions/python_training/data-collected/pluck_9_0.wav",
-    "pluck_9_0_fixed.wav",
-    fs=44100,
-)
+# fix_stereo_wav(
+#     "/Users/alexdhawan/Desktop/ECE5730/ML-head-transfer-functions/python_training/data-collected/pluck_9_0.wav",
+#     "pluck_9_0_fixed.wav",
+#     fs=44100,
+# )
