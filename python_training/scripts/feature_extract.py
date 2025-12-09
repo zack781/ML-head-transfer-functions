@@ -4,7 +4,7 @@
 ## Import statements
 import numpy as np 
 from scipy.io import wavfile
-from scipy.signal import stft
+from scipy.signal import stft,butter, filtfilt,correlate 
 import pdb
 
 def compute_ILD(left, right, fs,  n_fft=None):
@@ -92,38 +92,29 @@ def compute_ITD(left, right, fs, max_ITD_spec=0.001):
     left = left / max_val
     right = right / max_val
 
+    # zero-mean
+    left = left - left.mean()
+    right = right - right.mean()
+
+    # normalized cross-correlation (so amplitude differences don't matter)
+    corr = correlate(right, left, mode="full")
+    denom = (np.linalg.norm(left) * np.linalg.norm(right) + 1e-12)
+    corr = corr / denom
+
+    # lag axis: negative = right leads left, positive = right lags left
     N = len(left)
-    n_fft = 1
-    while n_fft < 2 * N:
-        n_fft *= 2
+    lags = np.arange(-N + 1, N)
 
-    L = np.zeros(n_fft, dtype=np.float32)
-    R = np.zeros(n_fft, dtype=np.float32)
-    L[:N] = left
-    R[:N] = right
-
-    # FFT
-    X_L = np.fft.fft(L)
-    X_R = np.fft.fft(R)
-
-    # cross-power spectrum and PHAT
-    cross = X_L * np.conj(X_R)
-    cross /= (np.abs(cross) + 1e-12)
-
-    # GCC-PHAT correlation
-    corr = np.fft.ifft(cross).real
-    corr = np.fft.fftshift(corr)
-
-    lags = np.arange(-n_fft // 2, n_fft // 2)
+    # restrict to plausible ITD window
     max_lag = int(max_ITD_spec * fs)
+    mask = (lags >= -max_lag) & (lags <= max_lag)
+    corr_valid = corr[mask]
+    lags_valid = lags[mask]
 
-    valid = np.where((lags >= -max_lag) & (lags <= max_lag))[0]
-    corr_valid = corr[valid]
-    lags_valid = lags[valid]
-
-    best_idx = np.argmax(corr_valid)  # peak
+    # best lag = argmax correlation
+    best_idx = np.argmax(corr_valid)
     itd_samples = int(lags_valid[best_idx])
-    itd_sec = itd_samples / fs
+    itd_sec = itd_samples / float(fs)
 
     return itd_sec, itd_samples
     # compute IT
@@ -232,3 +223,57 @@ def compute_spectral_features(left,right,fs,n_fft=None,bands_hz = None):
     }
 
     return spec_feat, meta
+import numpy as np
+
+def extract_beep_window(x, fs, win_len_sec=0.01, margin_sec=0.003):
+    x = np.asarray(x, dtype=np.float32)
+    env = np.abs(x)
+    thresh = 0.3 * np.max(env)
+    idx = np.where(env > thresh)[0]
+    if len(idx) == 0:
+        return x  # fallback
+    first = idx[0]
+    win_len = int(win_len_sec * fs)
+    margin = int(margin_sec * fs)
+    start = max(first - margin, 0)
+    end = min(start + win_len, len(x))
+    return x[start:end]
+
+def itd_corr(left, right, fs, max_ITD_spec=0.001):
+    """
+    ITD in seconds and samples, using plain time-domain correlation
+    over a ±max_ITD_spec window.
+    """
+    left = np.asarray(left, dtype=np.float32)
+    right = np.asarray(right, dtype=np.float32)
+    assert left.shape == right.shape
+
+    # normalize to common scale
+    max_val = max(np.max(np.abs(left)), np.max(np.abs(right)), 1e-12)
+    left /= max_val
+    right /= max_val
+
+    N = len(left)
+    max_lag = int(max_ITD_spec * fs)   # e.g. 44 samples for 1 ms @ 44.1k
+    best_lag = 0
+    best_val = -np.inf
+
+    # precompute energies if you later want normalized correlation;
+    # for now simple dot product is fine
+    for k in range(-max_lag, max_lag + 1):
+        if k < 0:
+            x = left[-k:N]      # left shifted right
+            y = right[0:N+k]
+        else:
+            x = left[0:N-k]
+            y = right[k:N]
+        if len(x) == 0:
+            continue
+        c = np.dot(x, y)
+        if c > best_val:
+            best_val = c
+            best_lag = k
+
+    itd_samples = best_lag
+    itd_sec = itd_samples / fs
+    return itd_sec, itd_samples
