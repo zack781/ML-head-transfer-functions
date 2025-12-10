@@ -1,7 +1,4 @@
 build
 !.vscode/*
-# In your .gitignore file:
-python_training/scripts/models/binaural_model_v1.keras
 
-# Or, to ignore all files ending in .keras in that directory:
-python_training/scripts/models/*.keras
+python_training/scripts/models/binaural_model_v1.keras
