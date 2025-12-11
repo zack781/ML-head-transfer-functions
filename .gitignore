@@ -1,4 +1,4 @@
 build
 !.vscode/*
-
+__pycache__
 python_training/scripts/models/binaural_model_v1.keras

@@ -2,12 +2,17 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models, optimizers
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
-import data_preprocessing as dp
+import importlib
+import data_preprocessing
+importlib.reload(data_preprocessing)
+import data_preprocessing as dp 
+import viz
+importlib.reload(viz)
 import viz
 
 # --- CONFIGURATION ---
 DATA_DIR = "./data/training_audio/raw/train_set" 
-MODEL_SAVE_PATH = "binaural_model_v1_full.keras"
+MODEL_SAVE_PATH = "binaural_model_v2_full.keras"
 
 def create_production_model(input_shape):
     """

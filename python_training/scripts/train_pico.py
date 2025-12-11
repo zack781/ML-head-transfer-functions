@@ -2,12 +2,16 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models, optimizers
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
-import data_preprocessing as dp
+import data_preprocessing
+import importlib
+importlib.reload(data_preprocessing)
+import data_preprocessing as dp 
 import viz
-
+importlib.reload(viz)
+import viz
 # --- CONFIGURATION ---
-DATA_DIR = "./data/training_audio/raw/train_set" 
-MODEL_SAVE_PATH = "pico_locator.keras"
+DATA_DIR = "/Users/alexdhawan/Desktop/ECE5730/ML-head-transfer-functions/python_training/data/training_audio/raw/train_set" 
+MODEL_SAVE_PATH = "/Users/alexdhawan/Desktop/ECE5730/ML-head-transfer-functions/python_training/scripts/models/pico_model_C.keras"
 
 def create_pico_model(input_shape):
     """
@@ -73,7 +77,7 @@ if __name__ == "__main__":
     history = model.fit(
         X_final, y_final,
         validation_data=(X_test, y_test),
-        epochs=50, 
+        epochs=75, 
         batch_size=32,
         callbacks=[
             EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
@@ -82,4 +86,4 @@ if __name__ == "__main__":
     )
     
     model.save(MODEL_SAVE_PATH)
-    viz.plot_results(model, X_test, y_test, title_prefix="Pico Model")
+    viz.plot_results(model, X_test, y_test)
