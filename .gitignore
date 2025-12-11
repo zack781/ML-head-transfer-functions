@@ -2,3 +2,16 @@ build
 !.vscode/*
 __pycache__
 python_training/scripts/models/binaural_model_v1.keras
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+
+# Ignore large model files
+*.keras
+*.tflite
+*.h5
+
+# Ignore artifacts
+*.hecho
+*.hcat
