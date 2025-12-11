@@ -5,6 +5,9 @@
 import numpy as np 
 from scipy.io import wavfile
 from scipy.signal import stft,butter, filtfilt,correlate 
+=======
+from scipy.signal import stft,butter, filtfilt,correlate
+from scipy.fft import rfft,irfft
 import pdb
 
 def compute_ILD(left, right, fs,  n_fft=None):
@@ -118,17 +121,7 @@ def compute_ITD(left, right, fs, max_ITD_spec=0.001):
 
     return itd_sec, itd_samples
     # compute IT
-def compute_IPD(left,right): 
-    """ Computes inter-aural phase difference for a pair of audio channels
 
-    Args:
-        left: left channel audio signal
-        right: right channel audio signal
-
-    Returns:
-        ipd: inter-aural phase difference
-    """
-    pass
 def compute_spectral_features(left,right,fs,n_fft=None,bands_hz = None):
     left = np.asarray(left, dtype=np.float32)
     right = np.asarray(right, dtype=np.float32)
@@ -277,3 +270,74 @@ def itd_corr(left, right, fs, max_ITD_spec=0.001):
     itd_samples = best_lag
     itd_sec = itd_samples / fs
     return itd_sec, itd_samples
+
+
+def spectral_subtract(signal, fs, noise_dur_sec=0.1, alpha=1.0, floor=0.001):
+    """
+    Perform Spectral Subtraction on a single channel.
+
+    1. Estimate noise power spectrum (Pn) from the start of the signal.
+    2. Subtract Pn from the full signal power spectrum (Ps).
+    3. Reconstruct the time-domain signal using the new magnitude and original phase.
+
+    Parameters
+    ----------
+    signal : numpy array
+        1D audio signal data (e.g., left or right channel).
+    fs : int
+        Sampling rate.
+    noise_dur_sec : float
+        Duration (in seconds) to estimate the noise profile from (e.g., 0.1s).
+    alpha : float
+        Noise magnitude subtraction factor (e.g., 1.0 for full subtraction).
+    floor : float
+        Minimum noise floor to prevent negative power spectral values.
+
+    Returns
+    -------
+    clean_signal : numpy array
+        The noise-reduced audio signal.
+    """
+    signal = np.asarray(signal, dtype=np.float32)
+    N = len(signal)
+    
+    # 1. Estimate Noise Spectrum from initial segment
+    N_noise = int(noise_dur_sec * fs)
+    if N_noise >= N:
+        N_noise = N // 10  # Use 10% of signal if shorter than noise_dur
+
+    noise_segment = signal[:N_noise]
+    noise_fft = rfft(noise_segment)
+    
+    # Average Noise Power Spectrum Pn (we only care about the magnitude)
+    P_noise_avg = np.abs(noise_fft)**2 / N_noise
+    
+    # 2. Compute full signal FFT
+    sig_fft = rfft(signal)
+    P_sig = np.abs(sig_fft)**2
+    phase_sig = np.angle(sig_fft)
+    
+    # Zero-pad the noise spectrum estimate to match the signal FFT length
+    P_noise_full = np.pad(P_noise_avg, (0, len(P_sig) - len(P_noise_avg)), 'edge')
+
+    # 3. Spectral Subtraction (Magnitude domain)
+    
+    # Power subtraction: P_clean = P_sig - alpha * P_noise
+    P_clean = P_sig - alpha * P_noise_full
+    
+    # Spectral floor to prevent negative values (non-linear step)
+    P_clean = np.maximum(P_clean, floor * P_noise_full)
+    
+    # Convert power back to magnitude
+    Mag_clean = np.sqrt(P_clean)
+    
+    # 4. Reconstruct clean signal in frequency domain
+    # Use clean magnitude and original noisy phase
+    sig_fft_clean = Mag_clean * np.exp(1j * phase_sig)
+    
+    # Inverse FFT to time domain
+    clean_signal = irfft(sig_fft_clean)
+    
+    # Ensure length matches original signal
+    return clean_signal[:N]
+>>>>>>> 4b66ce5d0d1dd747f4ed03edd65a2d0f05564d57
