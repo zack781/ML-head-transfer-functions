@@ -38,10 +38,10 @@ set(CONFIGTABLE ON)
 set(RFFT_Q15_256 ON)
 set(ALLFAST ON)
 
-# include CMSIS-DSP .cmake for GCC Toolchain
-include(${DSP}/Toolchain/GCC.cmake)
-# add CMSIS-DSP Source directory as subdirectory
-add_subdirectory(${DSP}/Source EXCLUDE_FROM_ALL)
+# # include CMSIS-DSP .cmake for GCC Toolchain
+# include(${DSP}/Toolchain/GCC.cmake)
+# # add CMSIS-DSP Source directory as subdirectory
+# add_subdirectory(${DSP}/Source EXCLUDE_FROM_ALL)
 
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
@@ -51,9 +51,6 @@ add_subdirectory(FatFs_SPI build)
 # Add executable. Default name is the project name, version 0.1
 add_executable(ML-head-transfer-functions
     hw_config.c
-    ML-head-transfer-functions.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/dsp_pipeline.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/ml_model.cpp
 )
 
 target_sources(ML-head-transfer-functions PRIVATE ML-head-transfer-functions.c)
@@ -70,8 +67,6 @@ target_link_libraries(ML-head-transfer-functions
     hardware_adc
     hardware_timer
     hardware_pio
-    pico-tflmicro
-    CMSISDSPTransform CMSISDSPSupport CMSISDSPCommon CMSISDSPComplexMath CMSISDSPFastMath CMSISDSPBasicMath
     no-OS-FatFS-SD-SDIO-SPI-RPi-Pico
 )
 
@@ -84,4 +79,4 @@ pico_enable_stdio_usb(ML-head-transfer-functions 1)
 pico_enable_stdio_uart(ML-head-transfer-functions 0)
 
 pico_add_extra_outputs(ML-head-transfer-functions)
-add_subdirectory("lib/pico-tflmicro" EXCLUDE_FROM_ALL)
+
