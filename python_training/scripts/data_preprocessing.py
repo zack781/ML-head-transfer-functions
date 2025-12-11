@@ -10,7 +10,7 @@ from scipy.io import wavfile
 # --- CONFIGURATION DEFAULTS ---
 SAMPLE_RATE = 44100
 CHUNK_DURATION_MS = 1100  
-N_MELS = 96               
+N_MELS = 32               
 SILENCE_THRESHOLD = 0.01  
 AZIMUTH_STEPS = 10        
 ELEVATION_STEPS = 10      
@@ -21,7 +21,7 @@ class AudioSlicer:
         self.chunk_len = int(sample_rate * (chunk_ms / 1000))
         self.n_mels = n_mels
         self.n_fft = 4096
-        self.hop_length = 256 
+        self.hop_length = 512 
         self.silence_thresh = silence_thresh
 
     def process_and_split(self, filepath, label):
@@ -90,40 +90,134 @@ class AudioSlicer:
                 y_train.append(label)
                 
         return X_train, y_train, X_test, y_test
+    def get_inference_tensor(self, filepath):
+        """
+        Loads a file and converts it specifically for the TFLite quantized model.
+        Returns: (input_tensor, valid_bool)
+        """
+        # 1. Run standard processing
+        # Note: We pass a dummy label because we only need the data
+        X_data, _, _, _ = self.process_and_split(filepath, label=0)
+        
+        if not X_data:
+            return None, False
+
+        # 2. Pick the first chunk (or loop through them in your script)
+        # Using the first chunk as the representative example
+        spec = X_data[0] # Shape is (95, 64, 3)
+
+        # 3. Handle Quantization (Float -> Int8)
+        # These values come from your Model Inspection log:
+        input_scale = 0.005507847294211388
+        input_zero_point = -55
+        
+        # Formula: q = (real_value / scale) + zero_point
+        q_spec = (spec / input_scale) + input_zero_point
+        q_spec = np.clip(q_spec, -128, 127) # Ensure it stays within int8 range
+        q_spec = q_spec.astype(np.int8)
+
+        # 4. Add Batch Dimension (95,64,3) -> (1,95,64,3)
+        input_tensor = np.expand_dims(q_spec, axis=0)
+        
+        return input_tensor, True
+# def load_and_split_dataset(data_dir):
+#     slicer = AudioSlicer()
+#     files = glob.glob(os.path.join(data_dir, "*.wav"))
+    
+#     X_train_all, y_train_all = [], []
+#     X_test_all, y_test_all = [], []
+    
+#     # Matches: "_0_0.wav", "_0_0 copy.wav", etc.
+#     pattern = re.compile(r'_(\d+)_(\d+)(?:.*)?\.wav$')
+    
+#     print(f"Found {len(files)} files. Parsing...")
+    
+#     for f in files:
+#         match = pattern.search(f)
+#         if match:
+#             elev_idx = float(match.group(1))
+#             az_idx = float(match.group(2))
+            
+#             elev_theta = (elev_idx / ELEVATION_STEPS) * (2 * np.pi)
+#             az_theta = (az_idx / AZIMUTH_STEPS) * (2 * np.pi)
+            
+#             label_vector = [
+#                 np.sin(elev_theta), np.cos(elev_theta), 
+#                 np.sin(az_theta), np.cos(az_theta)
+#             ] 
+            
+#             Xt, yt, Xv, yv = slicer.process_and_split(f, label_vector)
+#             X_train_all.extend(Xt); y_train_all.extend(yt)
+#             X_test_all.extend(Xv); y_test_all.extend(yv)
+            
+#     return (np.array(X_train_all), np.array(y_train_all), 
+#             np.array(X_test_all), np.array(y_test_all))
+
 
 def load_and_split_dataset(data_dir):
-    slicer = AudioSlicer()
+    slicer = AudioSlicer(SAMPLE_RATE, CHUNK_DURATION_MS, N_MELS, SILENCE_THRESHOLD)
     files = glob.glob(os.path.join(data_dir, "*.wav"))
     
-    X_train_all, y_train_all = [], []
-    X_test_all, y_test_all = [], []
-    
-    # Matches: "_0_0.wav", "_0_0 copy.wav", etc.
+    # 1. Group files by Label (Elev, Az)
+    # Dictionary: {(elev, az): [list_of_filenames]}
+    files_by_label = {}
     pattern = re.compile(r'_(\d+)_(\d+)(?:.*)?\.wav$')
     
-    print(f"Found {len(files)} files. Parsing...")
-    
+    print(f"Indexing {len(files)} files...")
     for f in files:
         match = pattern.search(f)
         if match:
-            elev_idx = float(match.group(1))
-            az_idx = float(match.group(2))
+            elev_idx = int(match.group(1))
+            az_idx = int(match.group(2))
+            key = (elev_idx, az_idx)
+            if key not in files_by_label:
+                files_by_label[key] = []
+            files_by_label[key].append(f)
+
+    X_train_all, y_train_all = [], []
+    X_test_all, y_test_all = [], []
+    
+    print("Processing with Hybrid Split Strategy...")
+    
+    for (elev_idx, az_idx), file_list in files_by_label.items():
+        # Create the label vector
+        elev_theta = (elev_idx / ELEVATION_STEPS) * (2 * np.pi)
+        az_theta = (az_idx / AZIMUTH_STEPS) * (2 * np.pi)
+        label_vector = [
+            np.sin(elev_theta), np.cos(elev_theta), 
+            np.sin(az_theta), np.cos(az_theta)
+        ]
+
+        # --- STRATEGY: CHECK FILE COUNT ---
+        if len(file_list) >= 2:
+            # SAFE MODE: Split by File
+            # Pick one file randomly for testing, use the rest for training
+            test_file = np.random.choice(file_list)
+            train_files = [x for x in file_list if x != test_file]
             
-            elev_theta = (elev_idx / ELEVATION_STEPS) * (2 * np.pi)
-            az_theta = (az_idx / AZIMUTH_STEPS) * (2 * np.pi)
+            # Process Train Files
+            for tf in train_files:
+                Xt, yt, _, _ = slicer.process_and_split(tf, label_vector)
+                # Force ALL chunks to train (since we reserved a whole file for test)
+                X_train_all.extend(Xt); y_train_all.extend(yt)
+                
+            # Process Test File
+            Xt, yt, _, _ = slicer.process_and_split(test_file, label_vector)
+            # Force ALL chunks to test
+            X_test_all.extend(Xt); y_test_all.extend(yt)
             
-            label_vector = [
-                np.sin(elev_theta), np.cos(elev_theta), 
-                np.sin(az_theta), np.cos(az_theta)
-            ] 
+        else:
+            # FALLBACK MODE: Split by Chunk (Single file available)
+            # We MUST split this single file to have representation in both sets
+            single_file = file_list[0]
+            Xt, yt, Xv, yv = slicer.process_and_split(single_file, label_vector)
             
-            Xt, yt, Xv, yv = slicer.process_and_split(f, label_vector)
+            # Standard chunk split output
             X_train_all.extend(Xt); y_train_all.extend(yt)
             X_test_all.extend(Xv); y_test_all.extend(yv)
-            
+
     return (np.array(X_train_all), np.array(y_train_all), 
             np.array(X_test_all), np.array(y_test_all))
-
 def augment_data(X_data):
     """
     Applies a random gain factor to each sample in X_data between 0.7 and 1.3.
